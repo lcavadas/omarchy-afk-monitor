@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "lcavadas.afk-monitor",
+  "name": "AFK Monitor",
+  "version": "1.0.0",
+  "author": "lcavadas",
+  "description": "AFK subscription usage: quota windows and credit balances per connection",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "AFK Monitor",
+    "description": "AFK subscription usage: quota windows and credit balances per connection",
+    "category": "System",
+    "allowMultiple": false
+  }
+}

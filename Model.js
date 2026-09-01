@@ -7,7 +7,10 @@
 function parseRecord(raw) {
   var record = {}
   var empty = function () {
-    return { ok: false, error: "bad collector output", accounts: [], subscriptions: [] }
+    return {
+      ok: false, error: "bad collector output",
+      accounts: [], subscriptions: [], extraKeys: []
+    }
   }
   try {
     record = JSON.parse(String(raw || "{}"))
@@ -79,7 +82,12 @@ function parseRecord(raw) {
     error: record.error || null,
     generatedAt: record.generatedAt || "",
     accounts: accounts,
-    subscriptions: flat
+    subscriptions: flat,
+    extraKeys: Array.isArray(record.extraKeys)
+      ? record.extraKeys.filter(function (k) {
+          return k && typeof k === "object" && k.label
+        })
+      : []
   }
 }
 

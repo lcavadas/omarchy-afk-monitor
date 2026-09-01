@@ -29,9 +29,8 @@ Panel {
   property string keyMessage: ""
   property bool keyMessageGood: false
 
-  // Pending one-shot collector runs (add/remove key) — queued so a slow
-  // fetch can't interleave with a config write.
-  property var pendingCommands: []
+  // A key-command run is in flight (the collector answers with a full fresh
+  // record on stdout, so no second pass is ever needed).
   property bool collectorBusy: false
 
   // Poll cadence. Quota windows move slowly; the collector is one HTTP fan-out
@@ -62,7 +61,6 @@ Panel {
   function refresh() {
     if (collectorBusy) return
     if (!collectProc.running) {
-      pendingCommands = []
       collectProc.command = ["python3", collectorPath()]
       collectProc.running = true
     }
@@ -73,13 +71,13 @@ Panel {
   }
 
   function runCollector(args) {
-    // One-shot command (add-key/remove-key) followed by a fresh poll.
-    pendingCommands = args
-    if (!collectorBusy && !collectProc.running) {
-      collectorBusy = true
-      collectProc.command = ["python3", collectorPath()].concat(args)
-      collectProc.running = true
-    }
+    // Key command (add/remove). The collector prints the human result to
+    // stderr and a full fresh record to stdout in the same run, so the
+    // popup updates from that single invocation.
+    if (collectorBusy || collectProc.running) return
+    collectorBusy = true
+    collectProc.command = ["python3", collectorPath()].concat(args)
+    collectProc.running = true
   }
 
   function addKey() {
@@ -90,9 +88,9 @@ Panel {
       keyMessageGood = false
       return
     }
-    keyMessage = ""
     newKeyLabel = ""
     newKeyValue = ""
+    addingKey = false // collapse immediately; result line reports below
     runCollector(["add-key", label, key])
   }
 
@@ -109,19 +107,7 @@ Panel {
     subscriptions = next.subscriptions
     if (next.extraKeys) extraKeys = next.extraKeys
     hasData = true
-    if (collectorBusy) {
-      // A one-shot command finished — surface its result from the stderr
-      // side channel (already captured) and resume the steady poll.
-      collectorBusy = false
-      if (pendingCommands.length > 0) {
-        var did = pendingCommands[0]
-        keyMessage = did === "add-key" ? "Key saved. Showing its usage on the next line."
-          : did === "remove-key" ? "Key removed." : ""
-        keyMessageGood = true
-        pendingCommands = []
-      }
-      refresh()
-    }
+    collectorBusy = false
   }
 
   Process {
@@ -136,9 +122,9 @@ Panel {
       onStreamFinished: {
         var t = String(text || "").trim()
         if (t.length === 0) return
-        if (t.indexOf("saved ") === 0 || t.indexOf("removed ") === 0) {
+        if (t.indexOf("saved ") === 0 || t.indexOf("removed ") === 0 || t.indexOf("accounts now:") === 0) {
           root.keyMessage = t
-          root.keyMessageGood = true
+          root.keyMessageGood = t.indexOf("no key") !== 0
         } else if (t.indexOf("no key matching") === 0) {
           root.keyMessage = t
           root.keyMessageGood = false
@@ -422,20 +408,20 @@ Panel {
               }
             }
 
-            // Quota windows: label, meter, percent, reset countdown.
+            // Quota windows: label on its own line, full-width meter, the
+            // percent + reset countdown on the line below (overlapping a
+            // single line was unreadable).
             Repeater {
               model: subCard.sub.windows
 
-              Item {
+              Column {
                 id: windowRow
                 required property var modelData
                 property var w: modelData
                 width: parent.width
-                height: Style.space(16)
+                spacing: Style.space(3)
 
                 Text {
-                  anchors.left: parent.left
-                  anchors.verticalCenter: parent.verticalCenter
                   text: Model.windowLabel(windowRow.w.name)
                   color: root.fgDim
                   font.family: root.fontFam
@@ -445,9 +431,7 @@ Panel {
 
                 // Meter track + fill.
                 Rectangle {
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width
                   height: Style.space(4)
                   radius: height / 2
                   color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
@@ -466,7 +450,6 @@ Panel {
 
                 Text {
                   anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
                   text: {
                     var pct = windowRow.w.percent + "%"
                     var reset = Model.formatReset(windowRow.w.resetsAt)

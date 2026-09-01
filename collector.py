@@ -135,17 +135,25 @@ def mask_key(key):
 
 
 def keys_cli(argv):
-    """add-key <label> <key> | remove-key <label|mask> | list-keys"""
+    """add-key <label> <key> | remove-key <label|mask> | list-keys
+
+    Mutating commands print a human message to stderr and then fall through
+    to a normal collection, so a single invocation always ends with the full
+    JSON record on stdout — callers never need a second round-trip.
+    """
     if not argv:
         return False
     cmd, rest = argv[0], argv[1:]
     if cmd == "add-key" and len(rest) == 2:
         entries = load_keys()
         label, key = rest[0].strip(), rest[1].strip()
+        if not label or not key:
+            print("add-key: label and key are both required", file=sys.stderr)
+            return True
         entries = [e for e in entries if e.get("label") != label]
         entries.append({"label": label, "key": key})
         save_keys(entries)
-        print(f"saved {label} ({mask_key(key)})")
+        print(f"saved {label} ({mask_key(key)})", file=sys.stderr)
         return True
     if cmd == "remove-key" and len(rest) == 1:
         target = rest[0]
@@ -153,10 +161,10 @@ def keys_cli(argv):
         kept = [e for e in entries
                 if e.get("label") != target and mask_key(e.get("key", "")) != target]
         if len(kept) == len(entries):
-            print(f"no key matching {target!r}")
+            print(f"no key matching {target!r}", file=sys.stderr)
         else:
             save_keys(kept)
-            print(f"removed {target}")
+            print(f"removed {target}", file=sys.stderr)
         return True
     if cmd == "list-keys":
         entries = load_keys()
@@ -251,11 +259,17 @@ def map_wham(raw):
         name = extra.get("metered_feature") or extra.get("limit_name") or "extra"
         windows.append({"name": name, "percent": pct, "resetsAt": parse_reset(w.get("reset_at"))})
     primary_pct = windows[0]["percent"] if windows else 0
-    balance = (raw.get("credits") or {}).get("balance")
+    credits = raw.get("credits") or {}
+    balance = None
+    # Only report a balance when the plan actually carries credits; ChatGPT
+    # Plus returns balance "0" with has_credits False, which would read as
+    # an exhausted prepaid account.
+    if credits.get("has_credits"):
+        balance = fmt_money(credits.get("balance"))
     return {
         "windows": windows,
         "status": "exhausted" if rl.get("limit_reached") else status_from_percent(primary_pct),
-        "balance": fmt_money(balance),
+        "balance": balance,
     }
 
 
@@ -387,6 +401,8 @@ def map_deepseek(raw):
     status = "exhausted" if (raw.get("is_available") is False or (total is not None and total <= 0)) else "ok"
     if total is not None and 0 < total < 1:
         status = "warning"
+    if total is not None and total == 0 and raw.get("is_available") is not False:
+        status = "ok"
     return {"windows": [], "status": status, "balance": balance}
 
 
@@ -398,10 +414,15 @@ def map_moonshot(raw):
         available = float(available)
     except (TypeError, ValueError):
         available = None
-    balance = f"{available:.2f}" if available is not None else None
-    status = "ok"
-    if available is not None:
-        status = "exhausted" if available <= 0 else "warning" if available < 1 else "ok"
+    if available is None:
+        return {"windows": [], "status": "ok", "balance": None}
+    # Some accounts report a zero cash balance while still being usable
+    # (voucher-based or unconfigured); treat 0 as "no balance" rather than
+    # exhausted unless the API explicitly says availability is false.
+    if available == 0 and raw.get("is_available") is not False:
+        return {"windows": [], "status": "ok", "balance": None}
+    balance = f"{available:.2f}"
+    status = "exhausted" if available <= 0 else "warning" if available < 1 else "ok"
     return {"windows": [], "status": status, "balance": balance}
 
 
@@ -506,9 +527,12 @@ def collect():
 
 def main():
     argv = sys.argv[1:]
-    if keys_cli(argv):
-        return
+    mutating = keys_cli(argv)  # True → message on stderr, then collect below
     record = collect()
+    if mutating:
+        # Let the caller know the effect: which accounts now exist.
+        print("accounts now: " + ", ".join(a["label"] for a in record["accounts"]),
+              file=sys.stderr)
     json.dump(record, sys.stdout)
     sys.stdout.write("\n")
 

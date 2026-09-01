@@ -55,5 +55,12 @@ full reload if needed.
 |---|---|
 | `manifest.json` | Plugin manifest (bar-widget entry point, repo root) |
 | `collector.py` | Polls AFK hub usage endpoints, emits one JSON record |
-| `Model.js` | Record parsing + formatting helpers (window labels, reset countdown) |
-| `Panel.qml` | Bar widget and popup cards |
+| `Model.js` | Record parsing + formatting helpers (window labels, reset countdown, icon mapping) |
+| `Panel.qml` | Bar widget (provider mark + value per subscription) and popup cards |
+| `assets/` | Monochrome provider marks: `<id>.svg` (white) + `<id>-light.svg` (dark) for light bars |
+
+Provider marks follow the agents panel's convention: the widget picks the
+white or dark twin based on the bar's text colour, so marks stay readable on
+dark, light, and transparent bars. Sources: simpleicons.org (anthropic,
+openrouter, deepseek, kimi, moonshotai, opencode), the omarchy agents plugin
+(claude, codex), worldvectorlogo (xai).

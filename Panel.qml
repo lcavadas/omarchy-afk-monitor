@@ -28,6 +28,17 @@ Panel {
   readonly property color barFg: root.bar ? root.bar.barForeground : Color.foreground
   readonly property color barFgDim: Qt.darker(root.barFg, 1.4)
 
+  // Surface-aware provider marks: white SVGs on dark bars, dark twins on
+  // light ones (same contract as the agents panel's assets/<id>-light.svg).
+  // Classified from the bar's *text* colour, not the background — themed or
+  // transparent bars report backgrounds that don't match the visual surface,
+  // but the foreground always carries the real contrast the text needs.
+  function isLightSurface() {
+    var c = root.barFg
+    var lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+    return lum < 0.5 // dark text => light surface => want the dark mark
+  }
+
   implicitWidth: barRow.implicitWidth
   implicitHeight: root.bar ? root.bar.barSize : Style.bar.sizeHorizontal
 
@@ -85,9 +96,12 @@ Panel {
 
   onOpenedChanged: if (root.opened) root.refresh()
 
-  // ---- Bar button: one metric per subscription. Quota subscriptions show a
-  //      worst-window percentage; balance subscriptions show the amount. With
-  //      nothing configured the module renders nothing but stays installed.
+  // ---- Bar button: one icon + value per subscription. Quota subscriptions
+  //      show the worst-window percentage; balance subscriptions show the
+  //      amount. Provider marks come from assets/<id>.svg resolved by the
+  //      same convention as the agents panel; a missing asset falls back to
+  //      the short text label. With nothing configured the module renders
+  //      nothing but stays installed.
   Item {
     id: button
     anchors.fill: parent
@@ -104,16 +118,36 @@ Panel {
           id: subRow
           required property var modelData
           property var sub: modelData
-          spacing: Style.space(3)
+          property string markUrl: Model.iconUrl(subRow.sub, root.isLightSurface())
+          spacing: Style.space(4)
 
-          Text {
+          // Provider mark; falls back to the short text label when the
+          // provider has no shipped asset.
+          Item {
+            width: Style.space(13)
+            height: Style.space(13)
             anchors.verticalCenter: parent.verticalCenter
-            text: Model.shortLabel(subRow.sub)
-            color: root.barFgDim
-            font.family: root.fontFam
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 0.8
+
+            Image {
+              anchors.fill: parent
+              visible: subRow.markUrl !== ""
+              source: subRow.markUrl
+              sourceSize.width: width * 2
+              sourceSize.height: height * 2
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+            }
+
+            Text {
+              anchors.centerIn: parent
+              visible: subRow.markUrl === ""
+              text: Model.shortLabel(subRow.sub)
+              color: root.barFgDim
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
           }
 
           Text {
@@ -256,13 +290,30 @@ Panel {
 
             PanelSeparator { foreground: root.fg }
 
-            // Card header: label + overall status dot.
+            // Card header: mark + label + overall status dot.
             Item {
               width: parent.width
-              height: subHeader.implicitHeight
+              height: Math.max(subMark.height, subHeader.implicitHeight)
+
+              Image {
+                id: subMark
+                anchors.left: parent.left
+                anchors.verticalCenter: subHeader.verticalCenter
+                width: Style.space(15)
+                height: Style.space(15)
+                visible: Model.iconUrl(subCard.sub, root.isLightSurface()) !== ""
+                source: Model.iconUrl(subCard.sub, root.isLightSurface())
+                sourceSize.width: width * 2
+                sourceSize.height: height * 2
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+              }
 
               Text {
                 id: subHeader
+                anchors.left: subMark.visible ? subMark.right : parent.left
+                anchors.leftMargin: subMark.visible ? Style.space(7) : 0
+                anchors.verticalCenter: parent.verticalCenter
                 text: subCard.sub.label
                 color: root.fg
                 font.family: root.fontFam

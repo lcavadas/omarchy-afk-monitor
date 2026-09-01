@@ -112,6 +112,37 @@ function shortLabel(sub) {
   return label ? label.split(" ")[0].toUpperCase() : "AFK"
 }
 
+// Bar asset per provider. Marks live in assets/<id>.svg (white, for dark
+// bars) with an assets/<id>-light.svg twin (dark) for light bars. Keys are
+// collector provider ids plus the aliases the mirror may report.
+var PROVIDER_ICONS = {
+  "codex": "codex",
+  "chatgpt": "codex",
+  "xai": "xai",
+  "xai-oauth": "xai",
+  "opencode-go": "opencode",
+  "kimi": "kimi",
+  "moonshot": "moonshot",
+  "openrouter": "openrouter",
+  "deepseek": "deepseek",
+  "anthropic-oauth": "anthropic",
+  "claude": "claude"
+}
+
+function iconKey(sub) {
+  var key = String(sub && sub.provider ? sub.provider : "")
+  if (PROVIDER_ICONS[key]) return PROVIDER_ICONS[key]
+  return ""
+}
+
+// Surface-aware mark URL: white mark on dark bars, dark twin on light ones.
+// Falls back to "" (caller shows the text glyph) when no asset exists.
+function iconUrl(sub, lightSurface) {
+  var key = iconKey(sub)
+  if (!key) return ""
+  return lightSurface ? "assets/" + key + "-light.svg" : "assets/" + key + ".svg"
+}
+
 function summaryLabel(subs) {
   // Bar text: worst window percent across subscriptions, or "$" for balance-only.
   var worst = 0
@@ -133,6 +164,7 @@ if (typeof module !== "undefined") {
     formatReset: formatReset,
     statusColor: statusColor,
     shortLabel: shortLabel,
+    iconUrl: iconUrl,
     summaryLabel: summaryLabel
   }
 }

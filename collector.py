@@ -401,8 +401,6 @@ def map_deepseek(raw):
     status = "exhausted" if (raw.get("is_available") is False or (total is not None and total <= 0)) else "ok"
     if total is not None and 0 < total < 1:
         status = "warning"
-    if total is not None and total == 0 and raw.get("is_available") is not False:
-        status = "ok"
     return {"windows": [], "status": status, "balance": balance}
 
 
@@ -416,11 +414,8 @@ def map_moonshot(raw):
         available = None
     if available is None:
         return {"windows": [], "status": "ok", "balance": None}
-    # Some accounts report a zero cash balance while still being usable
-    # (voucher-based or unconfigured); treat 0 as "no balance" rather than
-    # exhausted unless the API explicitly says availability is false.
-    if available == 0 and raw.get("is_available") is not False:
-        return {"windows": [], "status": "ok", "balance": None}
+    # Match AFK web's remainingCreditStatus: the ledger exists, so a zero or
+    # negative balance genuinely means drained (exhausted), not "hidden".
     balance = f"{available:.2f}"
     status = "exhausted" if available <= 0 else "warning" if available < 1 else "ok"
     return {"windows": [], "status": status, "balance": balance}

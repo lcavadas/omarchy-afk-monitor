@@ -12,17 +12,20 @@ Panel {
 
   // Parsed collector record.
   property bool hasData: false
-  property bool hasKey: true
   property string errorText: ""
   property string generatedAt: ""
   property var accounts: []
-  // Flat subscription list across all accounts — drives the bar metrics.
+  // Flat subscription list (visible ones only) — drives the bar metrics.
   property var subscriptions: []
 
-  // ---- Extra AFK keys (other orgs / personal accounts) --------------------
-  // Managed from the popup; stored by collector.py in a 0600 file. The raw
-  // keys never travel through QML — only masked previews come back.
-  property var extraKeys: []
+  function refreshFlat() {
+    subscriptions = Model.visibleSubscriptions(accounts, setting("accountVisibility", {}))
+  }
+
+  // ---- AFK keys (orgs / personal accounts) --------------------------------
+  // Every watched account must be configured here; stored by collector.py in
+  // a 0600 file. Raw keys never travel through QML — only masked previews.
+  property var keys: []
   property bool addingKey: false
   property string newKeyLabel: ""
   property string newKeyValue: ""
@@ -98,14 +101,47 @@ Panel {
     runCollector(["remove-key", target])
   }
 
+  function moveKey(target, direction) {
+    runCollector(["move-key", target, direction])
+  }
+
+  // Show-on-bar state lives in the widget's shell.json entry (via the bar's
+  // settings persistence), keyed "account/provider", defaulting to true.
+  function subKey(sub) {
+    return String(sub ? (sub.account || "") + "/" + (sub.provider || "") : "")
+  }
+
+  function subVisible(sub) {
+    var stored = setting("accountVisibility", {})
+    return !(stored && stored[subKey(sub)] === false)
+  }
+
+  function setSubVisible(sub, visible) {
+    var stored = setting("accountVisibility", {})
+    var next = {}
+    for (var k in stored) if (Object.prototype.hasOwnProperty.call(stored, k)) next[k] = stored[k]
+    next[subKey(sub)] = !!visible
+    persistSettings({"accountVisibility": next})
+    refreshFlat()
+  }
+
+  function persistSettings(patch) {
+    if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
+    var merged = {}
+    var current = settings || {}
+    for (var k in current) if (Object.prototype.hasOwnProperty.call(current, k)) merged[k] = current[k]
+    for (var k2 in patch) if (Object.prototype.hasOwnProperty.call(patch, k2)) merged[k2] = patch[k2]
+    root.settings = merged
+    root.bar.shell.updateEntryInline(root.moduleName, merged)
+  }
+
   function updateRecord(raw) {
     var next = Model.parseRecord(raw)
-    hasKey = next.ok
     errorText = next.error || ""
     generatedAt = next.generatedAt || ""
     accounts = next.accounts
-    subscriptions = next.subscriptions
-    if (next.extraKeys) extraKeys = next.extraKeys
+    refreshFlat()
+    if (next.keys) keys = next.keys
     hasData = true
     collectorBusy = false
   }
@@ -136,7 +172,6 @@ Panel {
     onExited: function (code) {
       if (code !== 0 && !root.hasData) {
         root.hasData = true
-        root.hasKey = false
         root.errorText = "collector exit " + code
       }
     }
@@ -177,7 +212,7 @@ Panel {
       spacing: Style.space(10)
 
       Repeater {
-        model: root.hasKey ? root.subscriptions : []
+        model: root.hasData ? root.subscriptions : []
 
         Row {
           id: subRow
@@ -234,20 +269,18 @@ Panel {
         }
       }
 
-      Text {
-        visible: !root.hasKey
-        text: "AFK"
-        color: root.barFgDim
-        font.family: root.fontFam
-        font.pixelSize: Style.font.caption
-        font.bold: true
-        font.letterSpacing: 0.8
-      }
-
-      Text {
-        visible: root.hasKey && root.subscriptions.length === 0
-        text: ""
-        font.pixelSize: Style.font.caption
+      // No keys configured: show the AFK mark so the entry point stays
+      // discoverable (clicking it opens the popup to add the first key).
+      Image {
+        visible: root.hasData && root.keys.length === 0
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(13)
+        height: Style.space(13)
+        source: root.isLightSurface() ? "assets/afk-light.svg" : "assets/afk.svg"
+        sourceSize.width: width * 2
+        sourceSize.height: height * 2
+        fillMode: Image.PreserveAspectFit
+        asynchronous: true
       }
     }
 
@@ -333,17 +366,17 @@ Panel {
         }
 
         Text {
-          visible: !root.hasKey
+          visible: root.hasData && root.keys.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
-          text: root.errorText || "No AFK API key found.\nRun `afk daemon` once or set AFK_USAGE_API_KEY."
+          text: "No keys configured.\nAdd an AFK API key below to start watching an account."
           color: root.fgDim
           font.family: root.fontFam
           font.pixelSize: Style.font.caption
         }
 
         Text {
-          visible: root.hasKey && root.hasData && root.subscriptions.length === 0
+          visible: root.hasData && root.keys.length > 0 && root.subscriptions.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
           text: "No AFK subscriptions connected.\nAdd one in AFK → Account → LLM."
@@ -398,13 +431,11 @@ Panel {
                 font.letterSpacing: 0.5
               }
 
-              Rectangle {
+              ToggleSwitch {
                 anchors.verticalCenter: subHeader.verticalCenter
                 anchors.right: parent.right
-                width: Style.space(6)
-                height: width
-                radius: width / 2
-                color: Model.statusColor(subCard.sub.status, root.fgDim, Color.accent, Color.urgent)
+                checked: root.subVisible(subCard.sub)
+                onToggled: root.setSubVisible(subCard.sub, checked)
               }
             }
 
@@ -514,7 +545,7 @@ Panel {
 
             Text {
               id: keysHeader
-              text: "Extra AFK keys"
+              text: "AFK keys"
               color: root.fg
               font.family: root.fontFam
               font.pixelSize: Style.font.caption
@@ -548,56 +579,79 @@ Panel {
           }
 
           Text {
-            visible: root.extraKeys.length === 0 && !root.addingKey
+            visible: root.keys.length === 0 && !root.addingKey
             width: parent.width
             wrapMode: Text.WordWrap
-            text: "No extra keys. Add an AFK API key to also watch another\norg or personal account from this machine."
+            text: "No keys configured. Add an AFK API key to watch an\norg or personal account from this machine."
             color: root.fgDim
             font.family: root.fontFam
             font.pixelSize: Style.font.caption
           }
 
-          // Configured keys: masked, with a remove action each.
+          // Configured keys in display order: show-on-bar checkbox, label,
+          // masked preview, reorder arrows, remove.
           Repeater {
-            model: root.extraKeys
+            model: root.keys
 
             Item {
               id: keyRow
               required property var modelData
               property string label: String(modelData.label || "?")
               property string masked: String(modelData.masked || "")
+              property int index: {
+                for (var i = 0; i < root.keys.length; i++)
+                  if (String(root.keys[i].label || "") === keyRow.label) return i
+                return 0
+              }
               width: parent.width
-              height: Style.space(18)
+              height: Math.max(Style.space(20), Style.space(22))
 
               Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: keyRow.label
+                width: parent.width - actionsRow.width - Style.space(10)
+                elide: Text.ElideRight
+                text: keyRow.label + "   " + keyRow.masked
                 color: root.fg
                 font.family: root.fontFam
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
-              Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(120)
-                anchors.verticalCenter: parent.verticalCenter
-                text: keyRow.masked
-                color: root.fgDim
-                font.family: root.fontFam
-                font.pixelSize: Style.font.caption
-              }
-
-              PanelActionButton {
+              Row {
+                id: actionsRow
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                iconText: "󰆴"
-                tooltipText: "Remove key"
-                foreground: root.fgDim
-                hoverColor: Color.urgent
-                fontFamily: root.fontFam
-                onClicked: root.removeKey(keyRow.label)
+                spacing: Style.space(2)
+
+                PanelActionButton {
+                  iconText: "󰼜"
+                  tooltipText: "Move up"
+                  foreground: root.fgDim
+                  hoverColor: root.fg
+                  fontFamily: root.fontFam
+                  enabled: keyRow.index > 0
+                  onClicked: root.moveKey(keyRow.label, "up")
+                }
+
+                PanelActionButton {
+                  iconText: "󰼝"
+                  tooltipText: "Move down"
+                  foreground: root.fgDim
+                  hoverColor: root.fg
+                  fontFamily: root.fontFam
+                  enabled: keyRow.index < root.keys.length - 1
+                  onClicked: root.moveKey(keyRow.label, "down")
+                }
+
+                PanelActionButton {
+                  iconText: "󰆴"
+                  tooltipText: "Remove key"
+                  foreground: root.fgDim
+                  hoverColor: Color.urgent
+                  fontFamily: root.fontFam
+                  onClicked: root.removeKey(keyRow.label)
+                }
               }
             }
           }

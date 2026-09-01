@@ -9,7 +9,7 @@ function parseRecord(raw) {
   var empty = function () {
     return {
       ok: false, error: "bad collector output",
-      accounts: [], subscriptions: [], extraKeys: []
+      accounts: [], subscriptions: [], keys: []
     }
   }
   try {
@@ -54,20 +54,17 @@ function parseRecord(raw) {
     }
   }
 
-  // Accounts are the source of truth; a flattened subscription list drives
-  // the bar (one metric per subscription, any account).
+  // Accounts are the source of truth; visibleSubscriptions() applies the
+  // per-subscription show-on-bar preferences for the bar list.
   var accounts = []
-  var flat = []
   var list = record.accounts || []
   for (var i = 0; i < list.length; i++) {
     var a = list[i]
-    var accountLabel = String(a.label || "primary")
+    var accountLabel = String(a.label || "account")
     var subs = []
     var inner = a.subscriptions || []
     for (var j = 0; j < inner.length; j++) {
-      var sub = parseSub(inner[j], accountLabel)
-      subs.push(sub)
-      flat.push(sub)
+      subs.push(parseSub(inner[j], accountLabel))
     }
     accounts.push({
       label: accountLabel,
@@ -82,13 +79,29 @@ function parseRecord(raw) {
     error: record.error || null,
     generatedAt: record.generatedAt || "",
     accounts: accounts,
-    subscriptions: flat,
-    extraKeys: Array.isArray(record.extraKeys)
-      ? record.extraKeys.filter(function (k) {
+    keys: Array.isArray(record.keys)
+      ? record.keys.filter(function (k) {
           return k && typeof k === "object" && k.label
         })
       : []
   }
+}
+
+// Flat list of subscriptions whose show-on-bar checkbox is on. Visibility
+// is stored per "account/provider" key; anything unstated is visible.
+function visibleSubscriptions(accounts, visibility) {
+  var out = []
+  var list = accounts || []
+  for (var i = 0; i < list.length; i++) {
+    var subs = (list[i].subscriptions || [])
+    for (var j = 0; j < subs.length; j++) {
+      var sub = subs[j]
+      var key = String(sub.account || "") + "/" + String(sub.provider || "")
+      if (visibility && visibility[key] === false) continue
+      out.push(sub)
+    }
+  }
+  return out
 }
 
 // Short uppercase window labels for the bar/popup rows.
@@ -201,6 +214,7 @@ function summaryLabel(subs) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseRecord: parseRecord,
+    visibleSubscriptions: visibleSubscriptions,
     windowLabel: windowLabel,
     formatReset: formatReset,
     statusColor: statusColor,

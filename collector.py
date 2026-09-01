@@ -26,17 +26,17 @@ grouped per account (API key):
       ]
     }
 
-Accounts: the machine's daemon key (from ~/.afk/config, overridable with
-AFK_USAGE_API_KEY) is always collected first as "primary". Additional AFK
-keys — other orgs, personal accounts — are read from
-~/.config/omarchy/afk-monitor.json (0600):
+Accounts: every AFK key to watch must be configured explicitly in
+~/.config/omarchy/afk-monitor.json (0600); nothing is assumed from
+AFK's own config:
 
-    { "keys": [ {"label": "Work org", "key": "afk-..."} ] }
+    { "keys": [ {"label": "Work org", "key": "afk-..."}, ... ] }
 
-Manage them with the collector CLI:
+Array order is display order. Manage them with the collector CLI:
 
     collector.py add-key <label> <key>
     collector.py remove-key <label>
+    collector.py move-key <label> <up|down|position>
     collector.py list-keys
 
 Data sources (per account key):
@@ -78,21 +78,6 @@ PROVIDERS = [
     ("deepseek", "DeepSeek"),
     ("moonshot", "Moonshot"),
 ]
-
-
-def resolve_api_key():
-    """AFK_USAGE_API_KEY beats AFK_API_KEY beats ~/.afk/config api_key."""
-    key = os.environ.get("AFK_USAGE_API_KEY") or os.environ.get("AFK_API_KEY")
-    if key:
-        return key.strip()
-    try:
-        for line in CONFIG_PATH.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("api_key") and "=" in line:
-                return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
-    return None
 
 
 # ── extra AFK keys (other orgs / personal accounts) ────────────────────────
@@ -166,12 +151,36 @@ def keys_cli(argv):
             save_keys(kept)
             print(f"removed {target}", file=sys.stderr)
         return True
+    if cmd == "move-key" and len(rest) == 2:
+        label, where = rest[0].strip(), rest[1].strip().lower()
+        entries = load_keys()
+        idx = next((i for i, e in enumerate(entries)
+                    if e.get("label") == label), None)
+        if idx is None:
+            print(f"no key matching {label!r}", file=sys.stderr)
+            return True
+        if where in ("up", "down"):
+            j = idx - 1 if where == "up" else idx + 1
+            if j < 0 or j >= len(entries):
+                print(f"{label} is already at the {'top' if where == 'up' else 'bottom'}",
+                      file=sys.stderr)
+                return True
+            entries[idx], entries[j] = entries[j], entries[idx]
+        elif where.isdigit():
+            pos = max(0, min(len(entries) - 1, int(where) - 1))
+            entries.insert(pos, entries.pop(idx))
+        else:
+            print("move-key: use up, down, or a 1-based position", file=sys.stderr)
+            return True
+        save_keys(entries)
+        print(f"moved {label} {where}", file=sys.stderr)
+        return True
     if cmd == "list-keys":
         entries = load_keys()
         if not entries:
-            print("no extra keys")
-        for e in entries:
-            print(f"{e.get('label', '?')}\t{mask_key(e.get('key', ''))}")
+            print("no keys configured")
+        for i, e in enumerate(entries, 1):
+            print(f"{i}\t{e.get('label', '?')}\t{mask_key(e.get('key', ''))}")
         return True
     return False
 
@@ -452,7 +461,20 @@ def map_claude_mirror(mirror):
     return {"windows": windows, "status": status_from_percent(worst), "balance": None}
 
 
-def collect_account(api_key, label, base):
+def daemon_key():
+    """This machine's daemon key, if ~/.afk/config is readable. Only used to
+    attribute the Claude mirror to the account that actually runs agents."""
+    try:
+        for line in CONFIG_PATH.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("api_key") and "=" in line:
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def collect_account(api_key, label, base, with_claude_mirror):
     """Fan out the provider usage endpoints for one AFK key."""
     subscriptions = []
     for provider, provider_label in PROVIDERS:
@@ -466,10 +488,10 @@ def collect_account(api_key, label, base):
             "provider": provider, "label": provider_label, **mapped
         })
 
-    # Claude subscription — only via mirrored websocket snapshot when present
-    # (and only meaningful for the primary account: the mirror is written by
-    # this machine's agent, which runs under the daemon key).
-    if label == "primary":
+    # Claude subscription — only via mirrored websocket snapshot when present.
+    # The mirror is written by this machine's agent, so it belongs to the
+    # configured account whose key is the daemon key (if any).
+    if with_claude_mirror:
         try:
             mirror = json.loads(CLAUDE_MIRROR_PATH.read_text())
             if mirror.get("provider") == "anthropic-oauth":
@@ -485,35 +507,26 @@ def collect_account(api_key, label, base):
 
 def collect():
     base = (os.environ.get("AFK_USAGE_BASE") or DEFAULT_BASE).rstrip("/")
+    daemon = daemon_key()
     accounts = []
-
-    primary_key = resolve_api_key()
-    if primary_key:
-        accounts.append({
-            "label": "primary",
-            "ok": True,
-            "error": None,
-            "subscriptions": collect_account(primary_key, "primary", base),
-        })
-
     for entry in load_keys():
+        label = str(entry.get("label") or "account")
+        key = str(entry["key"]).strip()
         accounts.append({
-            "label": str(entry.get("label") or "account"),
+            "label": label,
             "ok": True,
             "error": None,
-            "subscriptions": collect_account(str(entry["key"]).strip(),
-                                             str(entry.get("label") or "account"),
-                                             base),
+            "subscriptions": collect_account(
+                key, label, base, with_claude_mirror=(key == daemon)),
         })
 
-    ok = bool(accounts)
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "ok": ok,
-        "error": None if ok else "no API key configured",
+        "ok": True,
+        "error": None,
         "accounts": accounts,
         # Masked previews only — the raw keys never leave this file's storage.
-        "extraKeys": [
+        "keys": [
             {"label": str(e.get("label") or "?"), "masked": mask_key(e.get("key", ""))}
             for e in load_keys()
         ],

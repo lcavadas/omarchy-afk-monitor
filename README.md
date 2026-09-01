@@ -8,11 +8,23 @@ Bar widget showing AFK subscription usage per connection: quota windows
 - `collector.py` polls `https://afk-server.mooglest.com/api/auth/<provider>/usage`
   for every provider AFK supports (ChatGPT/Codex, xAI, OpenCode Go, Kimi,
   OpenRouter, DeepSeek, Moonshot). Providers that are not connected return 404
-  and are skipped. Auth uses the daemon API key from `~/.afk/config`
-  (`AFK_USAGE_API_KEY` overrides, `AFK_API_KEY` is also honoured).
+  and are skipped.
+- Every watched account must be configured explicitly — nothing is assumed
+  from AFK's own config. Keys live in `~/.config/omarchy/afk-monitor.json`
+  (0600); array order is display order:
+
+  ```json
+  { "keys": [ { "label": "Work org", "key": "afk-..." } ] }
+  ```
+
+  Manage them from the popup (add / reorder / remove / show-on-bar) or the
+  collector CLI: `add-key <label> <key>`, `remove-key <label>`,
+  `move-key <label> <up|down|position>`, `list-keys`.
 - `Panel.qml` (Quickshell bar widget) runs the collector on a 5-minute timer
-  and on popup open, then renders one bar metric per subscription and one card
-  per subscription in the popup.
+  and on popup open. With no keys configured the bar shows the AFK mark and
+  the popup offers the add-key form. Each subscription card has a switch to
+  include or exclude it from the bar (default: on), persisted per
+  account/provider in the widget's shell.json entry.
 
 ### Claude subscriptions
 
@@ -63,4 +75,4 @@ Provider marks follow the agents panel's convention: the widget picks the
 white or dark twin based on the bar's text colour, so marks stay readable on
 dark, light, and transparent bars. Sources: simpleicons.org (anthropic,
 openrouter, deepseek, kimi, moonshotai, opencode), the omarchy agents plugin
-(claude, codex), worldvectorlogo (xai).
+(claude, codex), worldvectorlogo (xai); the AFK mark is AFK's own brand glyph.

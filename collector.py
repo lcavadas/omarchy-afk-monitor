@@ -2,24 +2,44 @@
 """Collect AFK subscription usage and emit one display-ready JSON record.
 
 The record is consumed by the AFK Monitor bar widget. Every subscription
-connection configured in AFK is polled and normalised to a common shape:
+connection configured in AFK is polled and normalised to a common shape,
+grouped per account (API key):
 
     {
       "generatedAt": iso8601,
       "ok": bool,
-      "subscriptions": [
+      "accounts": [
         {
-          "provider":  "opencode-go",          # AFK provider id
-          "label":     "OpenCode Go",
-          "status":    "ok" | "warning" | "exhausted",
-          "windows":   [ {"name", "percent", "resetsAt"} ],
-          "balance":   "12.34 USD" | null      # credit-style subscriptions
+          "label": "primary",
+          "ok": bool,
+          "error": null,
+          "subscriptions": [
+            {
+              "provider":  "opencode-go",        # AFK provider id
+              "label":     "OpenCode Go",
+              "status":    "ok" | "warning" | "exhausted",
+              "windows":   [ {"name", "percent", "resetsAt"} ],
+              "balance":   "12.34 USD" | null    # credit-style subscriptions
+            }
+          ]
         }
       ]
     }
 
-Data sources (all authenticated with the daemon API key from ~/.afk/config,
-overridable with AFK_USAGE_API_KEY):
+Accounts: the machine's daemon key (from ~/.afk/config, overridable with
+AFK_USAGE_API_KEY) is always collected first as "primary". Additional AFK
+keys — other orgs, personal accounts — are read from
+~/.config/omarchy/afk-monitor.json (0600):
+
+    { "keys": [ {"label": "Work org", "key": "afk-..."} ] }
+
+Manage them with the collector CLI:
+
+    collector.py add-key <label> <key>
+    collector.py remove-key <label>
+    collector.py list-keys
+
+Data sources (per account key):
 
     GET https://afk-server.mooglest.com/api/auth/<provider>/usage
         codex (ChatGPT), xai, opencode-go, kimi, openrouter, deepseek,
@@ -27,8 +47,8 @@ overridable with AFK_USAGE_API_KEY):
 
     Claude (anthropic-oauth) has no HTTP route: its quota arrives as a live
     websocket `subscription_quota` message while an agent is running. The
-    agent mirrors the last snapshot to ~/.cache/afk/claude-quota.json when
-    AFK_QUOTA_MIRROR=1 is set (optional companion hook, never required).
+    agent mirrors the last snapshot to ~/.cache/afk/claude-quota.json
+    (primary account only — the mirror is written by this machine's agent).
 
 Percentages are normalised to 0-100 here; window names are normalised to
 lowercase short labels. The base URL can be overridden with AFK_USAGE_BASE
@@ -45,6 +65,8 @@ from pathlib import Path
 
 DEFAULT_BASE = "https://afk-server.mooglest.com"
 CONFIG_PATH = Path.home() / ".afk" / "config"
+KEYS_PATH = Path(os.environ.get("AFK_MONITOR_KEYS") or
+                 (Path.home() / ".config" / "omarchy" / "afk-monitor.json"))
 
 # provider id -> display label
 PROVIDERS = [
@@ -71,6 +93,79 @@ def resolve_api_key():
     except OSError:
         pass
     return None
+
+
+# ── extra AFK keys (other orgs / personal accounts) ────────────────────────
+# Stored in ~/.config/omarchy/afk-monitor.json with 0600 perms:
+#     { "keys": [ {"label": "Work org", "key": "afk-..."} ] }
+# The daemon key from ~/.afk/config is always collected first as the
+# "primary" account; extra keys each become their own account.
+
+def load_keys():
+    try:
+        data = json.loads(KEYS_PATH.read_text())
+        keys = data.get("keys") if isinstance(data, dict) else None
+        if isinstance(keys, list):
+            return [k for k in keys
+                    if isinstance(k, dict) and str(k.get("key") or "").strip()]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_keys(entries):
+    KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = KEYS_PATH.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"keys": entries}, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, KEYS_PATH)
+    try:
+        os.chmod(KEYS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def mask_key(key):
+    k = str(key)
+    if len(k) <= 8:
+        return k[:2] + "…"
+    return k[:6] + "…" + k[-4:]
+
+
+def keys_cli(argv):
+    """add-key <label> <key> | remove-key <label|mask> | list-keys"""
+    if not argv:
+        return False
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "add-key" and len(rest) == 2:
+        entries = load_keys()
+        label, key = rest[0].strip(), rest[1].strip()
+        entries = [e for e in entries if e.get("label") != label]
+        entries.append({"label": label, "key": key})
+        save_keys(entries)
+        print(f"saved {label} ({mask_key(key)})")
+        return True
+    if cmd == "remove-key" and len(rest) == 1:
+        target = rest[0]
+        entries = load_keys()
+        kept = [e for e in entries
+                if e.get("label") != target and mask_key(e.get("key", "")) != target]
+        if len(kept) == len(entries):
+            print(f"no key matching {target!r}")
+        else:
+            save_keys(kept)
+            print(f"removed {target}")
+        return True
+    if cmd == "list-keys":
+        entries = load_keys()
+        if not entries:
+            print("no extra keys")
+        for e in entries:
+            print(f"{e.get('label', '?')}\t{mask_key(e.get('key', ''))}")
+        return True
+    return False
 
 
 def fetch_json(url, api_key):
@@ -341,45 +436,78 @@ def map_claude_mirror(mirror):
     return {"windows": windows, "status": status_from_percent(worst), "balance": None}
 
 
-def collect():
-    api_key = resolve_api_key()
-    base = (os.environ.get("AFK_USAGE_BASE") or DEFAULT_BASE).rstrip("/")
-    record = {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "ok": api_key is not None,
-        "error": None if api_key else "no API key configured",
-        "subscriptions": [],
-    }
-    if not api_key:
-        return record
-
-    seen = set()
-    for provider, label in PROVIDERS:
+def collect_account(api_key, label, base):
+    """Fan out the provider usage endpoints for one AFK key."""
+    subscriptions = []
+    for provider, provider_label in PROVIDERS:
         payload = fetch_json(f"{base}/api/auth/{provider}/usage", api_key)
         if payload is None:
             continue
         mapped = MAPPERS[provider](payload)
         if not mapped["windows"] and not mapped["balance"]:
             continue
-        seen.add(provider)
-        record["subscriptions"].append({"provider": provider, "label": label, **mapped})
+        subscriptions.append({
+            "provider": provider, "label": provider_label, **mapped
+        })
 
-    # Claude subscription — only via mirrored websocket snapshot when present.
-    try:
-        mirror = json.loads(CLAUDE_MIRROR_PATH.read_text())
-        if mirror.get("provider") == "anthropic-oauth":
-            mapped = map_claude_mirror(mirror)
-            if mapped["windows"] or mapped["status"] != "ok":
-                record["subscriptions"].insert(0, {
-                    "provider": "anthropic-oauth", "label": "Claude", **mapped
-                })
-    except (OSError, ValueError):
-        pass
+    # Claude subscription — only via mirrored websocket snapshot when present
+    # (and only meaningful for the primary account: the mirror is written by
+    # this machine's agent, which runs under the daemon key).
+    if label == "primary":
+        try:
+            mirror = json.loads(CLAUDE_MIRROR_PATH.read_text())
+            if mirror.get("provider") == "anthropic-oauth":
+                mapped = map_claude_mirror(mirror)
+                if mapped["windows"] or mapped["status"] != "ok":
+                    subscriptions.insert(0, {
+                        "provider": "anthropic-oauth", "label": "Claude", **mapped
+                    })
+        except (OSError, ValueError):
+            pass
+    return subscriptions
 
-    return record
+
+def collect():
+    base = (os.environ.get("AFK_USAGE_BASE") or DEFAULT_BASE).rstrip("/")
+    accounts = []
+
+    primary_key = resolve_api_key()
+    if primary_key:
+        accounts.append({
+            "label": "primary",
+            "ok": True,
+            "error": None,
+            "subscriptions": collect_account(primary_key, "primary", base),
+        })
+
+    for entry in load_keys():
+        accounts.append({
+            "label": str(entry.get("label") or "account"),
+            "ok": True,
+            "error": None,
+            "subscriptions": collect_account(str(entry["key"]).strip(),
+                                             str(entry.get("label") or "account"),
+                                             base),
+        })
+
+    ok = bool(accounts)
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "ok": ok,
+        "error": None if ok else "no API key configured",
+        "accounts": accounts,
+        # Masked previews only — the raw keys never leave this file's storage.
+        "extraKeys": [
+            {"label": str(e.get("label") or "?"), "masked": mask_key(e.get("key", ""))}
+            for e in load_keys()
+        ],
+    }
 
 
 def main():
+    argv = sys.argv[1:]
+    if keys_cli(argv):
+        return
     record = collect()
     json.dump(record, sys.stdout)
     sys.stdout.write("\n")

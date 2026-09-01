@@ -15,7 +15,24 @@ Panel {
   property bool hasKey: true
   property string errorText: ""
   property string generatedAt: ""
+  property var accounts: []
+  // Flat subscription list across all accounts — drives the bar metrics.
   property var subscriptions: []
+
+  // ---- Extra AFK keys (other orgs / personal accounts) --------------------
+  // Managed from the popup; stored by collector.py in a 0600 file. The raw
+  // keys never travel through QML — only masked previews come back.
+  property var extraKeys: []
+  property bool addingKey: false
+  property string newKeyLabel: ""
+  property string newKeyValue: ""
+  property string keyMessage: ""
+  property bool keyMessageGood: false
+
+  // Pending one-shot collector runs (add/remove key) — queued so a slow
+  // fetch can't interleave with a config write.
+  property var pendingCommands: []
+  property bool collectorBusy: false
 
   // Poll cadence. Quota windows move slowly; the collector is one HTTP fan-out
   // per provider so 5 minutes is plenty and keeps the hub load negligible.
@@ -43,7 +60,44 @@ Panel {
   implicitHeight: root.bar ? root.bar.barSize : Style.bar.sizeHorizontal
 
   function refresh() {
-    if (!collectProc.running) collectProc.running = true
+    if (collectorBusy) return
+    if (!collectProc.running) {
+      pendingCommands = []
+      collectProc.command = ["python3", collectorPath()]
+      collectProc.running = true
+    }
+  }
+
+  function collectorPath() {
+    return decodeURIComponent(Qt.resolvedUrl("collector.py").toString()).replace("file://", "")
+  }
+
+  function runCollector(args) {
+    // One-shot command (add-key/remove-key) followed by a fresh poll.
+    pendingCommands = args
+    if (!collectorBusy && !collectProc.running) {
+      collectorBusy = true
+      collectProc.command = ["python3", collectorPath()].concat(args)
+      collectProc.running = true
+    }
+  }
+
+  function addKey() {
+    var label = newKeyLabel.trim()
+    var key = newKeyValue.trim()
+    if (label.length === 0 || key.length === 0) {
+      keyMessage = "Label and key are both required."
+      keyMessageGood = false
+      return
+    }
+    keyMessage = ""
+    newKeyLabel = ""
+    newKeyValue = ""
+    runCollector(["add-key", label, key])
+  }
+
+  function removeKey(target) {
+    runCollector(["remove-key", target])
   }
 
   function updateRecord(raw) {
@@ -51,13 +105,28 @@ Panel {
     hasKey = next.ok
     errorText = next.error || ""
     generatedAt = next.generatedAt || ""
+    accounts = next.accounts
     subscriptions = next.subscriptions
+    if (next.extraKeys) extraKeys = next.extraKeys
     hasData = true
+    if (collectorBusy) {
+      // A one-shot command finished — surface its result from the stderr
+      // side channel (already captured) and resume the steady poll.
+      collectorBusy = false
+      if (pendingCommands.length > 0) {
+        var did = pendingCommands[0]
+        keyMessage = did === "add-key" ? "Key saved. Showing its usage on the next line."
+          : did === "remove-key" ? "Key removed." : ""
+        keyMessageGood = true
+        pendingCommands = []
+      }
+      refresh()
+    }
   }
 
   Process {
     id: collectProc
-    command: ["python3", decodeURIComponent(Qt.resolvedUrl("collector.py").toString()).replace("file://", "")]
+    command: ["python3", collectorPath()]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.updateRecord(text)
@@ -65,11 +134,21 @@ Panel {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        if (text && text.trim().length > 0) console.warn("[afk-monitor] collector stderr:", text.trim())
+        var t = String(text || "").trim()
+        if (t.length === 0) return
+        if (t.indexOf("saved ") === 0 || t.indexOf("removed ") === 0) {
+          root.keyMessage = t
+          root.keyMessageGood = true
+        } else if (t.indexOf("no key matching") === 0) {
+          root.keyMessage = t
+          root.keyMessageGood = false
+        } else {
+          console.warn("[afk-monitor] collector stderr:", t)
+        }
       }
     }
     onExited: function (code) {
-      if (code !== 0) {
+      if (code !== 0 && !root.hasData) {
         root.hasData = true
         root.hasKey = false
         root.errorText = "collector exit " + code
@@ -214,7 +293,16 @@ Panel {
       anchors.fill: parent
       onCloseRequested: root.close()
       onTabRequested: function (direction) { root.switchPanel(direction) }
-      onTextKey: function (t) { if (t === "r" || t === "R") root.refresh() }
+      // While the add-key form is open the TextFields own the keyboard.
+      blocked: root.addingKey
+      onTextKey: function (t) {
+        if (t === "r" || t === "R") root.refresh()
+        if (t === "a" || t === "A") {
+          root.addingKey = true
+          root.keyMessage = ""
+          Qt.callLater(keyLabelField.forceActiveFocus)
+        }
+      }
 
       Column {
         id: column
@@ -314,7 +402,9 @@ Panel {
                 anchors.left: subMark.visible ? subMark.right : parent.left
                 anchors.leftMargin: subMark.visible ? Style.space(7) : 0
                 anchors.verticalCenter: parent.verticalCenter
-                text: subCard.sub.label
+                text: subCard.sub.account !== "primary" && subCard.sub.account !== ""
+                      ? subCard.sub.label + " · " + subCard.sub.account
+                      : subCard.sub.label
                 color: root.fg
                 font.family: root.fontFam
                 font.pixelSize: Style.font.caption
@@ -421,6 +511,183 @@ Panel {
                 }
               }
             }
+          }
+        }
+
+        // ---- Extra AFK keys ------------------------------------------------
+        // Additional AFK API keys (other orgs, personal accounts). Each key
+        // becomes its own account whose subscriptions join the bar. Raw keys
+        // stay in a 0600 file managed by collector.py; only masked previews
+        // are shown here.
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSeparator { foreground: root.fg }
+
+          Item {
+            width: parent.width
+            height: keysHeader.implicitHeight
+
+            Text {
+              id: keysHeader
+              text: "Extra AFK keys"
+              color: root.fg
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.5
+            }
+
+            Text {
+              anchors.right: parent.right
+              anchors.verticalCenter: keysHeader.verticalCenter
+              text: root.addingKey ? "esc to cancel" : "+ add"
+              color: root.addingKey ? root.fgDim : Color.accent
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.addingKey) {
+                    root.addingKey = false
+                    root.keyMessage = ""
+                  } else {
+                    root.addingKey = true
+                    root.keyMessage = ""
+                    Qt.callLater(keyLabelField.forceActiveFocus)
+                  }
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: root.extraKeys.length === 0 && !root.addingKey
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "No extra keys. Add an AFK API key to also watch another\norg or personal account from this machine."
+            color: root.fgDim
+            font.family: root.fontFam
+            font.pixelSize: Style.font.caption
+          }
+
+          // Configured keys: masked, with a remove action each.
+          Repeater {
+            model: root.extraKeys
+
+            Item {
+              id: keyRow
+              required property var modelData
+              property string label: String(modelData.label || "?")
+              property string masked: String(modelData.masked || "")
+              width: parent.width
+              height: Style.space(18)
+
+              Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: keyRow.label
+                color: root.fg
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(120)
+                anchors.verticalCenter: parent.verticalCenter
+                text: keyRow.masked
+                color: root.fgDim
+                font.family: root.fontFam
+                font.pixelSize: Style.font.caption
+              }
+
+              PanelActionButton {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "󰆴"
+                tooltipText: "Remove key"
+                foreground: root.fgDim
+                hoverColor: Color.urgent
+                fontFamily: root.fontFam
+                onClicked: root.removeKey(keyRow.label)
+              }
+            }
+          }
+
+          // Inline add form; blocks the panel key catcher while editing.
+          Column {
+            visible: root.addingKey
+            width: parent.width
+            spacing: Style.space(6)
+
+            TextField {
+              id: keyLabelField
+              width: parent.width
+              placeholderText: "Label (e.g. Work org)"
+              foreground: root.fg
+              font.family: root.fontFam
+              text: root.newKeyLabel
+              onTextChanged: root.newKeyLabel = text
+              Keys.onReturnPressed: keyKeyField.forceActiveFocus()
+              Keys.onEscapePressed: {
+                root.addingKey = false
+                root.keyMessage = ""
+              }
+            }
+
+            TextField {
+              id: keyKeyField
+              width: parent.width
+              placeholderText: "AFK API key"
+              foreground: root.fg
+              font.family: root.fontFam
+              password: true
+              text: root.newKeyValue
+              onTextChanged: root.newKeyValue = text
+              onAccepted: root.addKey()
+              Keys.onEscapePressed: {
+                root.addingKey = false
+                root.keyMessage = ""
+              }
+            }
+
+            Row {
+              spacing: Style.space(6)
+
+              Button {
+                text: "Save"
+                foreground: root.fg
+                accent: Color.accent
+                fontFamily: root.fontFam
+                onClicked: root.addKey()
+              }
+
+              Button {
+                text: "Cancel"
+                foreground: root.fgDim
+                accent: Color.accent
+                fontFamily: root.fontFam
+                onClicked: {
+                  root.addingKey = false
+                  root.keyMessage = ""
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: root.keyMessage !== ""
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: root.keyMessage
+            color: root.keyMessageGood ? root.fgDim : Color.urgent
+            font.family: root.fontFam
+            font.pixelSize: Style.font.caption
           }
         }
       }

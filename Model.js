@@ -1,22 +1,34 @@
 // AFK Monitor plugin data helpers.
 // Parsing and formatting for the collector record. The collector.py script
-// emits one JSON record with a "subscriptions" array; each entry carries
-// quota windows (percent 0-100, resetsAt unix seconds) or a credit balance.
+// emits one JSON record with an "accounts" array (one per AFK API key); each
+// account carries subscriptions with quota windows (percent 0-100, resetsAt
+// unix seconds) or a credit balance.
 
 function parseRecord(raw) {
   var record = {}
+  var empty = function () {
+    return { ok: false, error: "bad collector output", accounts: [], subscriptions: [] }
+  }
   try {
     record = JSON.parse(String(raw || "{}"))
   } catch (e) {
-    return { ok: false, error: "bad collector output", subscriptions: [] }
+    return empty()
   }
-  if (!record || typeof record !== "object") {
-    return { ok: false, error: "bad collector output", subscriptions: [] }
+  if (!record || typeof record !== "object") return empty()
+
+  var pctOf = function (sub) {
+    var worst = 0
+    for (var k = 0; k < sub.windows.length; k++) worst = Math.max(worst, sub.windows[k].percent)
+    return worst
   }
-  var subs = []
-  var list = record.subscriptions || []
-  for (var i = 0; i < list.length; i++) {
-    var s = list[i]
+
+  var statusOf = function (sub) {
+    var s = sub.status
+    if (["ok", "warning", "exhausted"].indexOf(s) >= 0) return s
+    return pctOf(sub) >= 100 ? "exhausted" : pctOf(sub) >= 70 ? "warning" : "ok"
+  }
+
+  var parseSub = function (s, account) {
     var windows = []
     var ws = s.windows || []
     for (var j = 0; j < ws.length; j++) {
@@ -29,24 +41,45 @@ function parseRecord(raw) {
         resetsAt: Number(w.resetsAt) || 0
       })
     }
-    var pctOf = function (sub) {
-      var worst = 0
-      for (var k = 0; k < sub.windows.length; k++) worst = Math.max(worst, sub.windows[k].percent)
-      return worst
-    }
-    subs.push({
+    return {
       provider: String(s.provider || ""),
       label: String(s.label || s.provider || "Unknown"),
-      status: ["ok", "warning", "exhausted"].indexOf(s.status) >= 0 ? s.status : pctOf(s) >= 100 ? "exhausted" : pctOf(s) >= 70 ? "warning" : "ok",
+      status: statusOf(s),
       windows: windows,
-      balance: s.balance || null
+      balance: s.balance || null,
+      account: String(account || "primary")
+    }
+  }
+
+  // Accounts are the source of truth; a flattened subscription list drives
+  // the bar (one metric per subscription, any account).
+  var accounts = []
+  var flat = []
+  var list = record.accounts || []
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i]
+    var accountLabel = String(a.label || "primary")
+    var subs = []
+    var inner = a.subscriptions || []
+    for (var j = 0; j < inner.length; j++) {
+      var sub = parseSub(inner[j], accountLabel)
+      subs.push(sub)
+      flat.push(sub)
+    }
+    accounts.push({
+      label: accountLabel,
+      ok: a.ok !== false,
+      error: a.error || null,
+      subscriptions: subs
     })
   }
+
   return {
     ok: record.ok !== false,
     error: record.error || null,
     generatedAt: record.generatedAt || "",
-    subscriptions: subs
+    accounts: accounts,
+    subscriptions: flat
   }
 }
 

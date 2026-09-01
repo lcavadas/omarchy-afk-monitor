@@ -30,9 +30,20 @@ subscriptions are simply absent from the monitor.
 ## Install
 
 ```sh
-ln -s "$PWD/lcavadas.afk-monitor" ~/.config/omarchy/plugins/lcavadas.afk-monitor
-omarchy plugin validate ~/.config/omarchy/plugins/lcavadas.afk-monitor
-omarchy bar move lcavadas.afk-monitor --section right   # or edit shell.json
+omarchy plugin add ssh://git@git.mooglest.com/mooglest/omarchy-afk-monitor.git --enable
+omarchy bar move lcavadas.afk-monitor --section center   # or any placement you like
+```
+
+`--enable` also asks where to place the widget on the bar. Enable later or
+change placement any time with `omarchy plugin enable lcavadas.afk-monitor`
+and `omarchy bar move lcavadas.afk-monitor --section right`.
+
+### Manual install (alternative)
+
+```sh
+git clone ssh://git@git.mooglest.com/mooglest/omarchy-afk-monitor.git \
+  ~/.config/omarchy/plugins/lcavadas.afk-monitor
+omarchy plugin enable lcavadas.afk-monitor
 ```
 
 The shell hot-reloads plugin code on save; `omarchy restart shell` forces a
@@ -42,7 +53,7 @@ full reload if needed.
 
 | File | Role |
 |---|---|
-| `manifest.json` | Plugin manifest (bar-widget entry point) |
+| `manifest.json` | Plugin manifest (bar-widget entry point, repo root) |
 | `collector.py` | Polls AFK hub usage endpoints, emits one JSON record |
 | `Model.js` | Record parsing + formatting helpers (window labels, reset countdown) |
 | `Panel.qml` | Bar widget and popup cards |

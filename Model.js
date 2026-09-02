@@ -87,6 +87,18 @@ function parseRecord(raw) {
   }
 }
 
+// Flat list of every subscription across accounts, in account order —
+// the popup renders from this so hidden-for-bar entries stay manageable.
+function allSubscriptions(accounts) {
+  var out = []
+  var list = accounts || []
+  for (var i = 0; i < list.length; i++) {
+    var subs = (list[i].subscriptions || [])
+    for (var j = 0; j < subs.length; j++) out.push(subs[j])
+  }
+  return out
+}
+
 // Flat list of subscriptions whose show-on-bar checkbox is on. Visibility
 // is stored per "account/provider" key; anything unstated is visible.
 function visibleSubscriptions(accounts, visibility) {
@@ -214,6 +226,7 @@ function summaryLabel(subs) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseRecord: parseRecord,
+    allSubscriptions: allSubscriptions,
     visibleSubscriptions: visibleSubscriptions,
     windowLabel: windowLabel,
     formatReset: formatReset,

@@ -15,10 +15,14 @@ Panel {
   property string errorText: ""
   property string generatedAt: ""
   property var accounts: []
-  // Flat subscription list (visible ones only) — drives the bar metrics.
+  // Unfiltered flat list — drives the popup cards (every subscription stays
+  // visible and toggleable there).
+  property var allSubscriptions: []
+  // Visible-only flat list — drives the bar metrics.
   property var subscriptions: []
 
   function refreshFlat() {
+    allSubscriptions = Model.allSubscriptions(accounts)
     subscriptions = Model.visibleSubscriptions(accounts, setting("accountVisibility", {}))
   }
 
@@ -330,17 +334,17 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        // Header: title + last-updated + manual refresh.
+        // Header: title + last-updated + manual refresh button.
         Item {
           width: parent.width
-          height: headerRow.implicitHeight
+          height: Math.max(headerRow.implicitHeight, refreshBtn.height)
 
           Row {
             id: headerRow
             spacing: Style.space(8)
 
             Text {
-              text: "AFK Subscriptions"
+              text: "AFK"
               color: root.fg
               font.family: root.fontFam
               font.pixelSize: Style.font.body
@@ -356,12 +360,28 @@ Panel {
             }
           }
 
-          Text {
+          Row {
             anchors.right: parent.right
-            text: "R to refresh"
-            color: root.fgDim
-            font.family: root.fontFam
-            font.pixelSize: Style.font.caption
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.generatedAt ? "" : "R to refresh"
+              color: root.fgDim
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+            }
+
+            PanelActionButton {
+              id: refreshBtn
+              iconText: "󰑐"
+              tooltipText: "Refresh now (R)"
+              foreground: root.fgDim
+              hoverColor: root.fg
+              fontFamily: root.fontFam
+              onClicked: root.refresh()
+            }
           }
         }
 
@@ -376,7 +396,7 @@ Panel {
         }
 
         Text {
-          visible: root.hasData && root.keys.length > 0 && root.subscriptions.length === 0
+          visible: root.hasData && root.keys.length > 0 && root.allSubscriptions.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
           text: "No AFK subscriptions connected.\nAdd one in AFK → Account → LLM."
@@ -386,7 +406,9 @@ Panel {
         }
 
         Repeater {
-          model: root.subscriptions
+          // All subscriptions across all accounts render here; the
+          // show-on-bar switches only filter the bar metrics.
+          model: root.allSubscriptions
 
           Column {
             id: subCard
@@ -432,10 +454,13 @@ Panel {
               }
 
               ToggleSwitch {
-                anchors.verticalCenter: subHeader.verticalCenter
+                id: subVisibleSwitch
+                width: subVisibleSwitch.implicitWidth
+                height: subVisibleSwitch.implicitHeight
+                anchors.verticalCenter: parent.verticalCenter
                 anchors.right: parent.right
                 checked: root.subVisible(subCard.sub)
-                onToggled: root.setSubVisible(subCard.sub, checked)
+                onToggled: root.setSubVisible(subCard.sub, !checked)
               }
             }
 
@@ -625,7 +650,7 @@ Panel {
                 spacing: Style.space(2)
 
                 PanelActionButton {
-                  iconText: "󰼜"
+                  iconText: "\uF077"
                   tooltipText: "Move up"
                   foreground: root.fgDim
                   hoverColor: root.fg
@@ -635,7 +660,7 @@ Panel {
                 }
 
                 PanelActionButton {
-                  iconText: "󰼝"
+                  iconText: "\uF078"
                   tooltipText: "Move down"
                   foreground: root.fgDim
                   hoverColor: root.fg

@@ -258,11 +258,13 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             text: {
               var s = subRow.sub
+              if (s.error) return "!"
               if (s.windows.length > 0) {
                 var worst = 0
                 for (var i = 0; i < s.windows.length; i++) worst = Math.max(worst, s.windows[i].percent)
                 return worst + "%"
               }
+              if (s.credits) return s.credits === "Unlimited" ? "∞" : s.credits.split(" ")[0]
               if (s.balance) return "$" + s.balance.split(" ")[0]
               return ""
             }
@@ -467,6 +469,16 @@ Panel {
             // Quota windows: label on its own line, full-width meter, the
             // percent + reset countdown on the line below (overlapping a
             // single line was unreadable).
+            Text {
+              visible: !!subCard.sub.error
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: String(subCard.sub.error || "")
+              color: Color.urgent
+              font.family: root.fontFam
+              font.pixelSize: Style.font.caption
+            }
+
             Repeater {
               model: subCard.sub.windows
 
@@ -514,6 +526,38 @@ Panel {
                   color: Model.statusColor(
                            windowRow.w.percent >= 100 ? "exhausted" : windowRow.w.percent >= 70 ? "warning" : "ok",
                            root.fg, Color.accent, Color.urgent)
+                  font.family: root.fontFam
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+
+            // Copilot remaining-credit line (not a $ amount). Unlimited
+            // plans skip the percent bar above and only show this.
+            Repeater {
+              model: subCard.sub.credits ? [subCard.sub.credits] : []
+
+              Item {
+                id: creditsRow
+                required property string modelData
+                width: parent.width
+                height: Style.space(16)
+
+                Text {
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "CREDITS"
+                  color: root.fgDim
+                  font.family: root.fontFam
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 0.5
+                }
+
+                Text {
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: creditsRow.modelData + (subCard.sub.overageAvailable ? " · overage" : "")
+                  color: Model.statusColor(subCard.sub.status, root.fg, Color.accent, Color.urgent)
                   font.family: root.fontFam
                   font.pixelSize: Style.font.caption
                 }

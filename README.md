@@ -6,9 +6,11 @@ Bar widget showing AFK subscription usage per connection: quota windows
 ## How it works
 
 - `collector.py` polls `https://afk-server.mooglest.com/api/auth/<provider>/usage`
-  for every provider AFK supports (ChatGPT/Codex, xAI, OpenCode Go, Kimi,
-  OpenRouter, DeepSeek, Moonshot). Providers that are not connected return 404
-  and are skipped.
+  for every provider AFK supports (ChatGPT/Codex, GitHub Copilot, xAI, OpenCode
+  Go, Kimi, OpenRouter, DeepSeek, Moonshot). Providers that are not connected
+  return 401/403/404 and are skipped. Copilot remaining-credit quota needs
+  AFK `0.13.7+` and a GitHub Copilot subscription connected under Account →
+  LLM → **+ Copilot subscription** (not an API key).
 - Every watched account must be configured explicitly — nothing is assumed
   from AFK's own config. Keys live in `~/.config/omarchy/afk-monitor.json`
   (0600); array order is display order:
@@ -38,6 +40,14 @@ Optional mirror: run any Claude-backed AFK session with
 (`{"provider":"anthropic-oauth","windows":{...},"status":"..."}`).
 The collector picks it up and shows it first. Without the mirror, Claude
 subscriptions are simply absent from the monitor.
+
+### GitHub Copilot
+
+Copilot quota is AFK's proxy of GitHub's unofficial user-quota snapshot
+(`GET /api/auth/copilot/usage`, AFK `0.13.7+`). The widget shows remaining
+premium credits (`253 / 1500 credits`), not a dollar amount. Unlimited chat
+plans render as `Unlimited` with no percent bar. Hide-on-404 is the same as
+the other providers, so accounts without Copilot connected show nothing.
 
 ## Install
 
@@ -74,5 +84,6 @@ full reload if needed.
 Provider marks follow the agents panel's convention: the widget picks the
 white or dark twin based on the bar's text colour, so marks stay readable on
 dark, light, and transparent bars. Sources: simpleicons.org (anthropic,
-openrouter, deepseek, kimi, moonshotai, opencode), the omarchy agents plugin
-(claude, codex), worldvectorlogo (xai); the AFK mark is AFK's own brand glyph.
+githubcopilot, openrouter, deepseek, kimi, moonshotai, opencode), the omarchy
+agents plugin (claude, codex), worldvectorlogo (xai); the AFK mark is AFK's
+own brand glyph.

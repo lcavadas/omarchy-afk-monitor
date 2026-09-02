@@ -42,8 +42,10 @@ Array order is display order. Manage them with the collector CLI:
 Data sources (per account key):
 
     GET https://afk-server.mooglest.com/api/auth/<provider>/usage
-        codex (ChatGPT), xai, opencode-go, kimi, openrouter, deepseek,
-        moonshot — 404 means the provider is not connected and is skipped.
+        codex (ChatGPT), copilot (GitHub Copilot), xai, opencode-go, kimi,
+        openrouter, deepseek, moonshot — 401/403/404 means the provider is
+        not connected (or GitHub refused the unofficial Copilot quota call)
+        and is skipped. Copilot needs AFK 0.13.7+.
 
     Claude (anthropic-oauth) has no HTTP route: its quota arrives as a live
     websocket `subscription_quota` message while an agent is running. The
@@ -71,6 +73,7 @@ KEYS_PATH = Path(os.environ.get("AFK_MONITOR_KEYS") or
 # provider id -> display label
 PROVIDERS = [
     ("codex", "ChatGPT"),
+    ("copilot", "GitHub Copilot"),
     ("xai", "xAI"),
     ("opencode-go", "OpenCode Go"),
     ("kimi", "Kimi"),
@@ -185,18 +188,29 @@ def keys_cli(argv):
     return False
 
 
-def fetch_json(url, api_key):
-    """Return parsed JSON or None. 404 = not connected = skip silently."""
+def fetch_usage(url, api_key):
+    """Return (payload, status). status is 200, an HTTP code, or "error".
+
+    401/403/404 = not connected (or GitHub refused Copilot's unofficial
+    quota call) and should be skipped. Other failures are returned so
+    Copilot can show a small error instead of vanishing.
+    """
     req = urllib.request.Request(url, headers={"X-AFK-API-Key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status != 200:
-                return None
-            return json.loads(resp.read().decode())
+                return None, resp.status
+            return json.loads(resp.read().decode()), 200
     except urllib.error.HTTPError as e:
-        return None  # 401/403/404: provider not configured or auth expired
+        return None, e.code
     except (urllib.error.URLError, OSError, ValueError):
-        return None
+        return None, "error"
+
+
+def fetch_json(url, api_key):
+    """Return parsed JSON or None. 404 = not connected = skip silently."""
+    payload, status = fetch_usage(url, api_key)
+    return payload if status == 200 else None
 
 
 # ── normalisers (mirror AFK web/src/lib/quotaMappers.ts) ──────────────────
@@ -413,6 +427,97 @@ def map_deepseek(raw):
     return {"windows": [], "status": status, "balance": balance}
 
 
+def _copilot_snapshot_usable(snap):
+    """True when a Copilot quota snapshot can be shown as a credit card."""
+    if not isinstance(snap, dict):
+        return False
+    if snap.get("unlimited") is True:
+        return True
+    if snap.get("has_quota") is True:
+        return True
+    entitlement = snap.get("entitlement")
+    try:
+        return float(entitlement) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _pick_copilot_snapshot(snapshots):
+    """Prefer premium_interactions; else the first snapshot with has_quota."""
+    if not isinstance(snapshots, dict):
+        return None, None
+    premium = snapshots.get("premium_interactions")
+    if _copilot_snapshot_usable(premium):
+        return "premium", premium
+    for name, snap in snapshots.items():
+        if name == "premium_interactions":
+            continue
+        if isinstance(snap, dict) and snap.get("has_quota") is True:
+            label = "premium" if name == "premium_interactions" else str(name or "credits")
+            return label, snap
+    return None, None
+
+
+def map_copilot(raw):
+    """GitHub Copilot: quota_snapshots.premium_interactions remaining credits.
+
+    used_percent = clamp(100 - percent_remaining) when present, else
+    (entitlement - remaining) / entitlement. Unlimited snapshots have no bar.
+    """
+    data = raw if isinstance(raw, dict) else {}
+    name, snap = _pick_copilot_snapshot(data.get("quota_snapshots") or {})
+    if snap is None:
+        return {"windows": [], "status": "ok", "balance": None, "credits": None}
+
+    reset = parse_reset(data.get("quota_reset_date_utc")) or parse_reset(data.get("quota_reset_date"))
+    if snap.get("unlimited") is True:
+        return {
+            "windows": [],
+            "status": "ok",
+            "balance": None,
+            "credits": "Unlimited",
+            "overageAvailable": bool(snap.get("overage_permitted")),
+        }
+
+    remaining_raw = snap.get("quota_remaining")
+    if remaining_raw is None:
+        remaining_raw = snap.get("remaining")
+    remaining = None
+    try:
+        remaining = int(round(float(remaining_raw)))
+    except (TypeError, ValueError):
+        remaining = None
+    entitlement = None
+    try:
+        entitlement = int(round(float(snap.get("entitlement"))))
+    except (TypeError, ValueError):
+        entitlement = None
+
+    pct = None
+    if snap.get("percent_remaining") is not None:
+        try:
+            pct = clamp(100 - float(snap.get("percent_remaining")))
+        except (TypeError, ValueError):
+            pct = None
+    if pct is None and remaining is not None and isinstance(entitlement, int) and entitlement > 0:
+        pct = clamp((entitlement - remaining) / entitlement * 100)
+    pct = 0 if pct is None else pct
+
+    credits = None
+    if remaining is not None and entitlement is not None:
+        credits = f"{remaining} / {entitlement} credits"
+    elif remaining is not None:
+        credits = f"{remaining} credits"
+
+    return {
+        "windows": [{"name": name or "credits", "percent": pct, "resetsAt": reset}],
+        "status": status_from_percent(pct),
+        "balance": None,
+        "credits": credits,
+        "overageAvailable": bool(snap.get("overage_permitted")),
+    }
+
+
 def map_moonshot(raw):
     """Moonshot: data.available_balance."""
     data = raw.get("data") or raw
@@ -432,6 +537,7 @@ def map_moonshot(raw):
 
 MAPPERS = {
     "codex": map_wham,
+    "copilot": map_copilot,
     "xai": map_xai,
     "opencode-go": map_opencode_go,
     "kimi": map_kimi,
@@ -478,11 +584,24 @@ def collect_account(api_key, label, base, with_claude_mirror):
     """Fan out the provider usage endpoints for one AFK key."""
     subscriptions = []
     for provider, provider_label in PROVIDERS:
-        payload = fetch_json(f"{base}/api/auth/{provider}/usage", api_key)
+        payload, status = fetch_usage(f"{base}/api/auth/{provider}/usage", api_key)
         if payload is None:
+            # Copilot: hide on 401/403/404; surface other failures as a
+            # small error so a down hub or AFK < 0.13.7 does not crash.
+            if provider == "copilot" and status not in (401, 403, 404):
+                detail = f"HTTP {status}" if isinstance(status, int) else "request failed"
+                subscriptions.append({
+                    "provider": provider,
+                    "label": provider_label,
+                    "status": "ok",
+                    "windows": [],
+                    "balance": None,
+                    "credits": None,
+                    "error": f"Could not load Copilot quota ({detail})",
+                })
             continue
         mapped = MAPPERS[provider](payload)
-        if not mapped["windows"] and not mapped["balance"]:
+        if not mapped["windows"] and not mapped["balance"] and not mapped.get("credits"):
             continue
         subscriptions.append({
             "provider": provider, "label": provider_label, **mapped

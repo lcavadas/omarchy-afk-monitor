@@ -50,6 +50,9 @@ function parseRecord(raw) {
       status: statusOf(s),
       windows: windows,
       balance: s.balance || null,
+      credits: s.credits || null,
+      error: s.error || null,
+      overageAvailable: !!s.overageAvailable,
       account: String(account || "primary")
     }
   }
@@ -126,6 +129,9 @@ var WINDOW_LABELS = {
   monthly: "MONTH",
   daily: "DAY",
   credits: "CREDITS",
+  premium: "PREMIUM",
+  chat: "CHAT",
+  completions: "COMPL",
   total: "TOTAL",
   extra: "EXTRA"
 }
@@ -161,6 +167,7 @@ function statusColor(status, normal, warn, urgent) {
 var SHORT_LABELS = {
   "codex": "GPT",
   "chatgpt": "GPT",
+  "copilot": "COP",
   "xai": "XAI",
   "xai-oauth": "XAI",
   "opencode-go": "OCG",
@@ -184,6 +191,7 @@ function shortLabel(sub) {
 var PROVIDER_ICONS = {
   "codex": "codex",
   "chatgpt": "codex",
+  "copilot": "copilot",
   "xai": "xai",
   "xai-oauth": "xai",
   "opencode-go": "opencode",
@@ -213,12 +221,15 @@ function summaryLabel(subs) {
   // Bar text: worst window percent across subscriptions, or "$" for balance-only.
   var worst = 0
   var hasBalance = false
+  var hasCredits = false
   for (var i = 0; i < subs.length; i++) {
     var s = subs[i]
     if (s.balance) hasBalance = true
+    if (s.credits) hasCredits = true
     for (var j = 0; j < s.windows.length; j++) worst = Math.max(worst, s.windows[j].percent)
   }
   if (worst > 0) return worst + "%"
+  if (hasCredits) return "credits"
   if (hasBalance) return "$"
   return ""
 }

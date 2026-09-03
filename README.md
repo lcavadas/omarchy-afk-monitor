@@ -52,7 +52,7 @@ the other providers, so accounts without Copilot connected show nothing.
 ## Install
 
 ```sh
-omarchy plugin add ssh://git@git.mooglest.com/mooglest/omarchy-afk-monitor.git --enable
+omarchy plugin add https://github.com/lcavadas/omarchy-afk-monitor.git --enable
 omarchy bar move lcavadas.afk-monitor --section center   # or any placement you like
 ```
 
@@ -63,13 +63,19 @@ and `omarchy bar move lcavadas.afk-monitor --section right`.
 ### Manual install (alternative)
 
 ```sh
-git clone ssh://git@git.mooglest.com/mooglest/omarchy-afk-monitor.git \
+git clone https://github.com/lcavadas/omarchy-afk-monitor.git \
   ~/.config/omarchy/plugins/lcavadas.afk-monitor
 omarchy plugin enable lcavadas.afk-monitor
 ```
 
 The shell hot-reloads plugin code on save; `omarchy restart shell` forces a
 full reload if needed.
+
+## Remove
+
+```sh
+omarchy plugin remove lcavadas.afk-monitor
+```
 
 ## Files
 

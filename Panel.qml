@@ -501,7 +501,7 @@ Panel {
                 Rectangle {
                   width: parent.width
                   height: Style.space(4)
-                  radius: height / 2
+                  radius: Style.cornerRadius > 0 ? height / 2 : 0
                   color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
 
                   Rectangle {
@@ -509,7 +509,7 @@ Panel {
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     width: parent.width * Math.min(1, windowRow.w.percent / 100)
-                    radius: height / 2
+                    radius: parent.radius
                     color: Model.statusColor(
                              windowRow.w.percent >= 100 ? "exhausted" : windowRow.w.percent >= 70 ? "warning" : "ok",
                              root.fg, Color.accent, Color.urgent)

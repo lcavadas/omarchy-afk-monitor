@@ -3,6 +3,8 @@
 Bar widget showing AFK subscription usage per connection: quota windows
 (percent used, time to reset) and prepaid credit balances.
 
+![AFK Monitor showing subscription quota windows and credit balances in the Omarchy bar](preview.png)
+
 ## How it works
 
 - `collector.py` polls `https://afk-server.mooglest.com/api/auth/<provider>/usage`

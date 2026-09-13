@@ -22,8 +22,10 @@ Bar widget showing AFK subscription usage per connection: quota windows
   ```
 
   Manage them from the popup (add / reorder / remove / show-on-bar) or the
-  collector CLI: `add-key <label> <key>`, `remove-key <label>`,
-  `move-key <label> <up|down|position>`, `list-keys`.
+  `add-key <label> --stdin`; for example:
+  `printf '%s\n' "$AFK_API_KEY" | python3 collector.py add-key work --stdin`.
+  Remove or reorder entries with `remove-key <label>`,
+  `move-key <label> <up|down|position>`, and `list-keys`.
 - `Panel.qml` (Quickshell bar widget) runs the collector on a 5-minute timer
   and on popup open. With no keys configured the bar shows the AFK mark and
   the popup offers the add-key form. Each subscription card has a switch to

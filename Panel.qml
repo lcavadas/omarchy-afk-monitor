@@ -28,7 +28,8 @@ Panel {
 
   // ---- AFK keys (orgs / personal accounts) --------------------------------
   // Every watched account must be configured here; stored by collector.py in
-  // a 0600 file. Raw keys never travel through QML — only masked previews.
+  // a 0600 file. Raw keys are sent to the collector over its private stdin
+  // pipe and never appear in the child process command line or output.
   property var keys: []
   property bool addingKey: false
   property string newKeyLabel: ""
@@ -39,6 +40,7 @@ Panel {
   // A key-command run is in flight (the collector answers with a full fresh
   // record on stdout, so no second pass is ever needed).
   property bool collectorBusy: false
+  property string pendingCollectorInput: ""
 
   // Poll cadence. Quota windows move slowly; the collector is one HTTP fan-out
   // per provider so 5 minutes is plenty and keeps the hub load negligible.
@@ -68,7 +70,7 @@ Panel {
   function refresh() {
     if (collectorBusy) return
     if (!collectProc.running) {
-      collectProc.command = ["python3", collectorPath()]
+      collectProc.command = ["/usr/bin/python3", collectorPath()]
       collectProc.running = true
     }
   }
@@ -77,13 +79,14 @@ Panel {
     return decodeURIComponent(Qt.resolvedUrl("collector.py").toString()).replace("file://", "")
   }
 
-  function runCollector(args) {
+  function runCollector(args, stdinInput) {
     // Key command (add/remove). The collector prints the human result to
     // stderr and a full fresh record to stdout in the same run, so the
     // popup updates from that single invocation.
     if (collectorBusy || collectProc.running) return
     collectorBusy = true
-    collectProc.command = ["python3", collectorPath()].concat(args)
+    pendingCollectorInput = stdinInput || ""
+    collectProc.command = ["/usr/bin/python3", collectorPath()].concat(args)
     collectProc.running = true
   }
 
@@ -98,7 +101,7 @@ Panel {
     newKeyLabel = ""
     newKeyValue = ""
     addingKey = false // collapse immediately; result line reports below
-    runCollector(["add-key", label, key])
+    runCollector(["add-key", label, "--stdin"], key + "\n")
   }
 
   function removeKey(target) {
@@ -152,7 +155,13 @@ Panel {
 
   Process {
     id: collectProc
-    command: ["python3", collectorPath()]
+    stdinEnabled: true
+    onStarted: {
+      if (root.pendingCollectorInput.length > 0) {
+        write(root.pendingCollectorInput)
+        root.pendingCollectorInput = ""
+      }
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.updateRecord(text)

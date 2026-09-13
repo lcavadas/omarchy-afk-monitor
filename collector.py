@@ -59,6 +59,7 @@ lowercase short labels. The base URL can be overridden with AFK_USAGE_BASE
 
 import json
 import os
+import stat
 import sys
 import urllib.error
 import urllib.request
@@ -66,6 +67,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_BASE = "https://afk-server.mooglest.com"
+MAX_RESPONSE_BYTES = 256 * 1024
+MAX_JSON_DEPTH = 16
+MAX_JSON_ITEMS = 64
+MAX_JSON_STRING_BYTES = 8 * 1024
 CONFIG_PATH = Path.home() / ".afk" / "config"
 KEYS_PATH = Path(os.environ.get("AFK_MONITOR_KEYS") or
                  (Path.home() / ".config" / "omarchy" / "afk-monitor.json"))
@@ -101,18 +106,43 @@ def load_keys():
     return []
 
 
-def save_keys(entries):
-    KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = KEYS_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump({"keys": entries}, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, KEYS_PATH)
+def _verify_keys_path():
+    """Reject unsafe config locations before replacing the keys file."""
+    parent = KEYS_PATH.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    parent_stat = os.stat(parent)
+    if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid():
+        raise OSError("AFK Monitor config directory is not owned by this user")
     try:
+        existing = os.lstat(KEYS_PATH)
+    except FileNotFoundError:
+        return
+    if (not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.getuid()
+            or existing.st_mode & 0o077):
+        raise OSError("AFK Monitor keys file is not a private regular file")
+
+
+def save_keys(entries):
+    _verify_keys_path()
+    tmp = KEYS_PATH.with_name(KEYS_PATH.name + ".tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"keys": entries}, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, KEYS_PATH)
         os.chmod(KEYS_PATH, 0o600)
-    except OSError:
-        pass
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def mask_key(key):
@@ -123,7 +153,7 @@ def mask_key(key):
 
 
 def keys_cli(argv):
-    """add-key <label> <key> | remove-key <label|mask> | list-keys
+    """add-key <label> --stdin | remove-key <label|mask> | list-keys
 
     Mutating commands print a human message to stderr and then fall through
     to a normal collection, so a single invocation always ends with the full
@@ -132,9 +162,9 @@ def keys_cli(argv):
     if not argv:
         return False
     cmd, rest = argv[0], argv[1:]
-    if cmd == "add-key" and len(rest) == 2:
+    if cmd == "add-key" and len(rest) == 2 and rest[1] == "--stdin":
         entries = load_keys()
-        label, key = rest[0].strip(), rest[1].strip()
+        label, key = rest[0].strip(), sys.stdin.readline().strip()
         if not label or not key:
             print("add-key: label and key are both required", file=sys.stderr)
             return True
@@ -200,11 +230,32 @@ def fetch_usage(url, api_key):
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status != 200:
                 return None, resp.status
-            return json.loads(resp.read().decode()), 200
+            body = resp.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                return None, "error"
+            payload = json.loads(body.decode())
+            if not _safe_json(payload):
+                return None, "error"
+            return payload, 200
     except urllib.error.HTTPError as e:
         return None, e.code
     except (urllib.error.URLError, OSError, ValueError):
         return None, "error"
+
+
+def _safe_json(value, depth=0):
+    """Accept only bounded JSON trees before mapper code consumes server input."""
+    if depth > MAX_JSON_DEPTH:
+        return False
+    if isinstance(value, str):
+        return len(value.encode()) <= MAX_JSON_STRING_BYTES
+    if isinstance(value, list):
+        return len(value) <= MAX_JSON_ITEMS and all(_safe_json(v, depth + 1) for v in value)
+    if isinstance(value, dict):
+        return (len(value) <= MAX_JSON_ITEMS
+                and all(isinstance(k, str) and len(k.encode()) <= MAX_JSON_STRING_BYTES
+                        and _safe_json(v, depth + 1) for k, v in value.items()))
+    return value is None or isinstance(value, (bool, int, float))
 
 
 def fetch_json(url, api_key):

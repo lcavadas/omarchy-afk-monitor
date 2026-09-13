@@ -4,6 +4,18 @@
 // account carries subscriptions with quota windows (percent 0-100, resetsAt
 // unix seconds) or a credit balance.
 
+var MAX_RECORD_BYTES = 256 * 1024
+var MAX_ACCOUNTS = 16
+var MAX_SUBSCRIPTIONS = 16
+var MAX_WINDOWS = 8
+var MAX_KEYS = 16
+var MAX_TEXT_LENGTH = 128
+
+function boundedText(value, fallback) {
+  var text = String(value || fallback || "")
+  return text.slice(0, MAX_TEXT_LENGTH)
+}
+
 function parseRecord(raw) {
   var record = {}
   var empty = function () {
@@ -12,8 +24,10 @@ function parseRecord(raw) {
       accounts: [], subscriptions: [], keys: []
     }
   }
+  var text = String(raw || "{}")
+  if (text.length > MAX_RECORD_BYTES) return empty()
   try {
-    record = JSON.parse(String(raw || "{}"))
+    record = JSON.parse(text)
   } catch (e) {
     return empty()
   }
@@ -21,7 +35,8 @@ function parseRecord(raw) {
 
   var pctOf = function (sub) {
     var worst = 0
-    for (var k = 0; k < sub.windows.length; k++) worst = Math.max(worst, sub.windows[k].percent)
+    var windows = Array.isArray(sub.windows) ? sub.windows : []
+    for (var k = 0; k < windows.length; k++) worst = Math.max(worst, windows[k].percent)
     return worst
   }
 
@@ -33,58 +48,62 @@ function parseRecord(raw) {
 
   var parseSub = function (s, account) {
     var windows = []
-    var ws = s.windows || []
+    var ws = Array.isArray(s.windows) ? s.windows.slice(0, MAX_WINDOWS) : []
     for (var j = 0; j < ws.length; j++) {
       var w = ws[j]
+      if (!w || typeof w !== "object") continue
       var pct = Number(w.percent)
       if (!isFinite(pct)) continue
       windows.push({
-        name: String(w.name || "usage"),
+        name: boundedText(w.name, "usage"),
         percent: Math.max(0, Math.min(100, Math.round(pct))),
         resetsAt: Number(w.resetsAt) || 0
       })
     }
     return {
-      provider: String(s.provider || ""),
-      label: String(s.label || s.provider || "Unknown"),
+      provider: boundedText(s.provider),
+      label: boundedText(s.label || s.provider, "Unknown"),
       status: statusOf(s),
       windows: windows,
-      balance: s.balance || null,
-      credits: s.credits || null,
-      error: s.error || null,
+      balance: boundedText(s.balance) || null,
+      credits: boundedText(s.credits) || null,
+      error: boundedText(s.error) || null,
       overageAvailable: !!s.overageAvailable,
-      account: String(account || "primary")
+      account: boundedText(account, "primary")
     }
   }
 
   // Accounts are the source of truth; visibleSubscriptions() applies the
   // per-subscription show-on-bar preferences for the bar list.
   var accounts = []
-  var list = record.accounts || []
+  var list = Array.isArray(record.accounts) ? record.accounts.slice(0, MAX_ACCOUNTS) : []
   for (var i = 0; i < list.length; i++) {
     var a = list[i]
-    var accountLabel = String(a.label || "account")
+    if (!a || typeof a !== "object") continue
+    var accountLabel = boundedText(a.label, "account")
     var subs = []
-    var inner = a.subscriptions || []
+    var inner = Array.isArray(a.subscriptions) ? a.subscriptions.slice(0, MAX_SUBSCRIPTIONS) : []
     for (var j = 0; j < inner.length; j++) {
-      subs.push(parseSub(inner[j], accountLabel))
+      if (inner[j] && typeof inner[j] === "object") subs.push(parseSub(inner[j], accountLabel))
     }
     accounts.push({
       label: accountLabel,
       ok: a.ok !== false,
-      error: a.error || null,
+      error: boundedText(a.error) || null,
       subscriptions: subs
     })
   }
 
   return {
     ok: record.ok !== false,
-    error: record.error || null,
-    generatedAt: record.generatedAt || "",
+    error: boundedText(record.error) || null,
+    generatedAt: boundedText(record.generatedAt),
     accounts: accounts,
     keys: Array.isArray(record.keys)
       ? record.keys.filter(function (k) {
           return k && typeof k === "object" && k.label
+        }).slice(0, MAX_KEYS).map(function (k) {
+          return {label: boundedText(k.label, "account"), masked: boundedText(k.masked)}
         })
       : []
   }
